@@ -24,6 +24,130 @@ void
 pinit(void)
 {
   initlock(&ptable.lock, "ptable");
+  for (int i = 0; i < 101; i++)
+    queues[i] = 0;
+
+}
+
+void
+io_wait_time(void)
+{
+  struct proc *p;
+
+    for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+    if (p->state == RUNNABLE)
+      p->wait_time++;
+    if (p->state == SLEEPING)
+      p->iotime++;
+  }
+}
+
+void
+push(struct node **head, struct proc *p)
+{
+  struct node *newNode = 0;
+  for (int i = 0; i < NPROC; i++) {
+    if (!(nodes[i].p)) {
+      newNode = &(nodes[i]);
+      break;
+    }
+  }
+  newNode->next = 0;
+  newNode->p = p;
+
+  if (!(*head)) {
+    *head = newNode;
+  } else {
+    struct node *cur = *head;
+    while (cur->next) cur = cur->next;
+    cur->next = newNode;
+  }
+}
+
+struct proc*
+pop(struct node **head)
+{
+  if (!(*head)) return 0;
+
+  struct node *del = (*head);
+  *head = (*head)->next;
+  struct proc *ret = del->p;
+  del->p = 0;
+  return ret;
+}
+
+void remove(struct node **head, int pid)
+{
+  if ((*head)->p->pid == pid) {
+    (*head)->p = 0;
+    *head = (*head)->next;
+    return;
+  }
+
+  struct node *cur = *head;
+  while (cur && cur->next) {
+    if (cur->next->p->pid == pid) {
+      struct node *del = cur->next;
+      cur->next = del->next;
+      del->p = 0;
+      return;
+    }
+    cur = cur->next;
+  }
+}
+
+int
+set_nice(int new_priority, int pid)
+{
+  if (new_priority < 0 || new_priority > 100)
+    return -1;
+
+  acquire(&ptable.lock);
+  struct proc *p;
+  int old_priority = -1;
+
+  for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+    if (p->pid == pid) {
+      old_priority = p->queue;
+      p->queue = new_priority;
+      if (p->queue_time) {
+        remove(&queues[old_priority], p->pid);
+        push(&queues[new_priority], p);
+      }
+      break;
+    }
+  }
+  release(&ptable.lock);
+
+  if (myproc() && new_priority < myproc()->queue)
+    yield();
+
+  return old_priority;
+}
+
+void
+ps(void)
+{
+  struct proc *p;
+  char* states[] = { "UNUSED", "EMBRYO  ", "SLEEPING", "RUNNABLE", "RUNNING ", "ZOMBIE  " };
+
+  cprintf("PID\t");
+  cprintf("Priority\t");
+  cprintf("State   \trun_time\twait_time\tn_times\t");
+  cprintf("\n");
+
+  acquire(&ptable.lock);
+  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+    if(p->state == UNUSED)
+      continue;
+
+    cprintf("%d\t", p->pid);
+    cprintf("%d\t\t", p->queue);
+    cprintf("%s\t%d\t%d\t%d\t", states[p->state], p->run_time, p->wait_time, p->n_times);
+    cprintf("\n");
+  }
+
+  release(&ptable.lock);
 }
 
 // Must be called with interrupts disabled
@@ -88,8 +212,20 @@ allocproc(void)
 found:
   p->state = EMBRYO;
   p->pid = nextpid++;
+  p->create_time = ticks;
+  p->exit_time = 0;
+  p->run_time = 0;
+  p->queue = 50;
+  p->n_times = 0;
+  p->wait_time = 0;
+  p->iotime = 0;
 
   release(&ptable.lock);
+  
+  if (1) {
+    if (myproc() && 50 < myproc()->queue)
+      yield();
+  }
 
   // Allocate kernel stack.
   if((p->kstack = kalloc()) == 0){
@@ -321,36 +457,59 @@ wait(void)
 //      via swtch back to the scheduler.
 void
 scheduler(void)
-{
+{ 
   struct proc *p;
   struct cpu *c = mycpu();
   c->proc = 0;
-  
+  //struct proc *p;
   for(;;){
     // Enable interrupts on this processor.
     sti();
-
-    // Loop over process table looking for process to run.
     acquire(&ptable.lock);
-    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
-      if(p->state != RUNNABLE)
-        continue;
 
-      // Switch to chosen process.  It is the process's job
-      // to release ptable.lock and then reacquire it
-      // before jumping back to us.
-      c->proc = p;
-      switchuvm(p);
-      p->state = RUNNING;
+   //struct proc *p;
 
-      swtch(&(c->scheduler), p->context);
-      switchkvm();
+  // Check for runnable processes not in any queue
+  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+    if(p->state != RUNNABLE)
+      continue;
 
-      // Process is done running for now.
-      // It should have changed its p->state before coming back.
-      c->proc = 0;
+    if ((p->queue_time) == 0) {
+      p->queue_time = ticks + 1;
+      push(&queues[p->queue], p);
+      // cprintf("Push %d\n", p->pid);
     }
-    release(&ptable.lock);
+  }
+
+  int q = 0;
+  while (q < 101 && !queues[q])  q++;
+
+  //if (q == 101) cprintf("ERROR !\n");
+
+  p = pop(&queues[q]);
+  if (q != p->queue) 
+      cprintf("ERROR !\n");
+
+  p->ticktime = 1;
+  //if (!p) cprintf("ERROR !\n");
+
+  // Switch to chosen process.  It is the process's job
+  // to release ptable.lock and then reacquire it
+  // before jumping back to us.
+  c->proc = p;
+  switchuvm(p);
+  p->state = RUNNING;
+  p->n_times++;
+  p->wait_time = 0;
+  
+  swtch(&(c->scheduler), p->context);
+  switchkvm();
+
+  // Process is done running for now.
+  // It should have changed its p->state before coming back.
+  c->proc = 0;
+  p->queue_time = 0;
+  release(&ptable.lock);
 
   }
 }

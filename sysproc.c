@@ -21,6 +21,22 @@ sys_exit(void)
 }
 
 int
+sys_set_nice(void)
+{
+  int priority;
+  int pid;
+
+  if (argint(0, &priority) < 0 || argint(1, &pid) < 0)
+    return -1;
+  return set_nice(priority, pid);
+}
+
+void sys_ps(void)
+{
+  return ps();
+}
+
+int
 sys_wait(void)
 {
   return wait();
