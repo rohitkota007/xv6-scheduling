@@ -111,6 +111,11 @@ found:
   p->context = (struct context*)sp;
   memset(p->context, 0, sizeof *p->context);
   p->context->eip = (uint)forkret;
+  p->create_time = ticks;
+  p->n_run = 0;
+  p->run_time = 0;
+  p->end_time = 0;
+  p->io_time = 0;
 
   return p;
 }
@@ -147,7 +152,7 @@ userinit(void)
   // writes to be visible, and the lock is also needed
   // because the assignment might not be atomic.
   acquire(&ptable.lock);
-
+  p->create_time = 0;
   p->state = RUNNABLE;
 
   release(&ptable.lock);
@@ -260,7 +265,7 @@ exit(void)
         wakeup1(initproc);
     }
   }
-
+  curproc->end_time = ticks;
   // Jump into the scheduler, never to return.
   curproc->state = ZOMBIE;
   sched();
@@ -320,39 +325,43 @@ wait(void)
 //  - eventually that process transfers control
 //      via swtch back to the scheduler.
 void
-scheduler(void)
-{
-  struct proc *p;
-  struct cpu *c = mycpu();
-  c->proc = 0;
-  
-  for(;;){
-    // Enable interrupts on this processor.
-    sti();
+scheduler(void) {
+    struct proc *p = 0;
+    struct cpu *c = mycpu();
+    c->proc = 0;
+    for (;;) {
+        // Enable interrupts on this processor.
+        sti();
+        int minCTime = 1e9;
+        int found = 0;
+        // Loop over process table looking for process to run.
+        acquire(&ptable.lock);
+        for (struct proc *aProc = ptable.proc; aProc < &ptable.proc[NPROC]; aProc++) {
+            if (aProc->state == RUNNABLE && aProc->create_time < minCTime) {
+                minCTime = aProc->create_time;
+                p = aProc;
+                found = 1;
+            }
+        }
+        // Switch to chosen process.  It is the process's job
+        // to release ptable.lock and then reacquire it
+        // before jumping back to us.
+        if (p != 0 && found) {
+            c->proc = p;
+            switchuvm(p);
+            p->state = RUNNING;
+            p->n_run++;
+            //cprintf("FCFS: process switching to %d\n", p->pid);
+            swtch(&(c->scheduler), p->context);
+            switchkvm();
 
-    // Loop over process table looking for process to run.
-    acquire(&ptable.lock);
-    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
-      if(p->state != RUNNABLE)
-        continue;
+            // Process is done running for now.
+            // It should have changed its p->state before coming back.
+            c->proc = 0;
 
-      // Switch to chosen process.  It is the process's job
-      // to release ptable.lock and then reacquire it
-      // before jumping back to us.
-      c->proc = p;
-      switchuvm(p);
-      p->state = RUNNING;
-
-      swtch(&(c->scheduler), p->context);
-      switchkvm();
-
-      // Process is done running for now.
-      // It should have changed its p->state before coming back.
-      c->proc = 0;
+        }
+        release(&ptable.lock);
     }
-    release(&ptable.lock);
-
-  }
 }
 
 // Enter scheduler.  Must hold only ptable.lock
