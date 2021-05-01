@@ -38,10 +38,10 @@ struct cpu*
 mycpu(void)
 {
   int apicid, i;
-  
+
   if(readeflags()&FL_IF)
     panic("mycpu called with interrupts enabled\n");
-  
+
   apicid = lapicid();
   // APIC IDs are not guaranteed to be contiguous. Maybe we should have
   // a reverse map, or reserve a register to store &cpus[i].
@@ -88,6 +88,21 @@ allocproc(void)
 found:
   p->state = EMBRYO;
   p->pid = nextpid++;
+
+  p->ctime = ticks;
+  p->etime = 0;
+  p->rtime = 0;
+  p->last_wait_time=0;
+  p->total_wait_time=0;
+  p->context_switches=0;
+  p->pri = -1;
+  int i;
+  for(i=0;i<NUM_Q;i++){
+    p->q_ticks[i]=0;
+  }
+  p->aging_ticks = 1;
+  p->cur_q=0;
+  // cprintf("%d %d %d\n",p->ctime, p->pid, p->cur_q);
   release(&ptable.lock);
 
   // Allocate kernel stack.
@@ -123,7 +138,7 @@ userinit(void)
   extern char _binary_initcode_start[], _binary_initcode_size[];
 
   p = allocproc();
-  
+
   initproc = p;
   if((p->pgdir = setupkvm()) == 0)
     panic("userinit: out of memory?");
@@ -148,6 +163,23 @@ userinit(void)
   acquire(&ptable.lock);
 
   p->state = RUNNABLE;
+  // assign the aging_ticks!
+  switch(p->cur_q){
+    case 1:
+    p->aging_ticks= 10;
+    break;
+    case 2:
+    p->aging_ticks= 15;
+    break;
+    case 3:
+    p->aging_ticks= 20;
+    break;
+    case 4:
+    p->aging_ticks= 40;
+    break;
+  }
+  p->last_wait_time=0;
+  push(p->cur_q,p->pid); // push it!
 
   release(&ptable.lock);
 }
@@ -215,6 +247,23 @@ fork(void)
 
   np->state = RUNNABLE;
 
+  // assign the aging_ticks!
+  switch(np->cur_q){
+    case 1:
+    np->aging_ticks= 10;
+    break;
+    case 2:
+    np->aging_ticks= 15;
+    break;
+    case 3:
+    np->aging_ticks= 20;
+    break;
+    case 4:
+    np->aging_ticks= 40;
+    break;
+  }
+  np->last_wait_time=0;
+  push(np->cur_q,np->pid); // push it!
   release(&ptable.lock);
 
   return pid;
@@ -259,7 +308,7 @@ exit(void)
         wakeup1(initproc);
     }
   }
-
+  curproc->etime = ticks;
   // Jump into the scheduler, never to return.
   curproc->state = ZOMBIE;
   sched();
@@ -274,7 +323,7 @@ wait(void)
   struct proc *p;
   int havekids, pid;
   struct proc *curproc = myproc();
-  
+
   acquire(&ptable.lock);
   for(;;){
     // Scan through table looking for exited children.
@@ -310,7 +359,6 @@ wait(void)
   }
 }
 
-
 //PAGEBREAK: 42
 // Per-CPU process scheduler.
 // Each CPU calls scheduler() after setting itself up.
@@ -322,34 +370,55 @@ wait(void)
 void
 scheduler(void)
 {
-  struct proc *p;
+  struct proc *p=0;
   struct cpu *c = mycpu();
   c->proc = 0;
-  
+
   for(;;){
     // Enable interrupts on this processor.
     sti();
-
-    // Loop over process table looking for process to run.
+    int q=0;
+    int pid=-1;
     acquire(&ptable.lock);
-    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
-      if(p->state != RUNNABLE)
-        continue;
+    for(q=0;q<NUM_Q;q++){
+      if(isQEmpty(q)) continue;
 
+      pid = pop(q);
+      break;
+    }
+    if(pid==-1){
+      release(&ptable.lock);
+      continue;
+    }
+    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+       if(p->pid == pid) break;
+    }
+
+    if(p == 0){  // theres no process
+      release(&ptable.lock);
+      continue;
+    }
       // Switch to chosen process.  It is the process's job
       // to release ptable.lock and then reacquire it
       // before jumping back to us.
-      c->proc = p;
-      switchuvm(p);
-      p->state = RUNNING;
+    c->proc = p;
+    switchuvm(p);
+    p->last_wait_time=0;
+    p->context_switches++;
+      // assign the limit_ticks
+    if(q==0) p->limit_ticks=1;
+    else if(q==1) p->limit_ticks=2;
+    else if(q==2) p->limit_ticks=4;
+    else if(q==3) p->limit_ticks=8;
+    else if(q==4) p->limit_ticks=16;
 
-      swtch(&(c->scheduler), p->context);
-      switchkvm();
+    p->state = RUNNING;
+    swtch(&(c->scheduler), p->context);
+    switchkvm();
 
       // Process is done running for now.
       // It should have changed its p->state before coming back.
-      c->proc = 0;
-    }
+    c->proc = 0;
     release(&ptable.lock);
   }
 }
@@ -386,6 +455,23 @@ yield(void)
 {
   acquire(&ptable.lock);  //DOC: yieldlock
   myproc()->state = RUNNABLE;
+  // assign the aging_ticks!
+  switch(myproc()->cur_q){
+    case 1:
+    myproc()->aging_ticks= 10;
+    break;
+    case 2:
+    myproc()->aging_ticks= 15;
+    break;
+    case 3:
+    myproc()->aging_ticks= 20;
+    break;
+    case 4:
+    myproc()->aging_ticks= 40;
+    break;
+  }
+  myproc()->last_wait_time=0;
+  push(myproc()->cur_q,myproc()->pid); // push it!
   sched();
   release(&ptable.lock);
 }
@@ -459,8 +545,26 @@ wakeup1(void *chan)
   struct proc *p;
 
   for(p = ptable.proc; p < &ptable.proc[NPROC]; p++)
-    if(p->state == SLEEPING && p->chan == chan)
+    if(p->state == SLEEPING && p->chan == chan){
       p->state = RUNNABLE;
+      // assign the aging_ticks!
+      switch(p->cur_q){
+        case 1:
+        p->aging_ticks= 10;
+        break;
+        case 2:
+        p->aging_ticks= 15;
+        break;
+        case 3:
+        p->aging_ticks= 20;
+        break;
+        case 4:
+        p->aging_ticks= 40;
+        break;
+      }
+      p->last_wait_time=0;
+      push(p->cur_q,p->pid); // push it!
+    }
 }
 
 // Wake up all processes sleeping on chan.
@@ -485,8 +589,26 @@ kill(int pid)
     if(p->pid == pid){
       p->killed = 1;
       // Wake process from sleep if necessary.
-      if(p->state == SLEEPING)
+      if(p->state == SLEEPING){
         p->state = RUNNABLE;
+        // assign the aging_ticks!
+        switch(p->cur_q){
+          case 1:
+          p->aging_ticks= 10;
+          break;
+          case 2:
+          p->aging_ticks= 15;
+          break;
+          case 3:
+          p->aging_ticks= 20;
+          break;
+          case 4:
+          p->aging_ticks= 40;
+          break;
+        }
+        p->last_wait_time=0;
+        push(p->cur_q,p->pid); // push it!
+      }
       release(&ptable.lock);
       return 0;
     }
@@ -530,4 +652,72 @@ procdump(void)
     }
     cprintf("\n");
   }
+}
+
+void
+upd_times(void){
+  struct proc* p;
+  acquire(&ptable.lock);
+  for(p=ptable.proc; p<&ptable.proc[NPROC]; p++){
+    if(p->state == RUNNING){
+      p->rtime++;
+      p->limit_ticks--;
+      p->q_ticks[p->cur_q]++;
+    }
+    else if(p->state == RUNNABLE){
+      p->last_wait_time++;
+      p->total_wait_time++;
+      if(p->cur_q!=0){
+        p->aging_ticks--;
+        if(p->aging_ticks<=0){
+          removeq(p->cur_q,p->pid);
+          p->last_wait_time=0;
+          p->cur_q--;
+          // assign the aging_ticks!
+          switch(p->cur_q){
+            case 1:
+            p->aging_ticks= 10;
+            break;
+            case 2:
+            p->aging_ticks= 15;
+            break;
+            case 3:
+            p->aging_ticks= 20;
+            break;
+            case 4:
+            p->aging_ticks= 40;
+            break;
+          }
+          push(p->cur_q,p->pid);
+          // cprintf("%d %d %d\n",ticks, p->pid, p->cur_q); // p
+        }
+      }
+    }
+  }
+
+  release(&ptable.lock);
+}
+
+// lists the processes along with relevant details
+void
+ps(void){
+  static char *states[] = {
+  [UNUSED]    "unused  ",
+  [EMBRYO]    "embryo  ",
+  [SLEEPING]  "sleeping",
+  [RUNNABLE]  "runnable",
+  [RUNNING]   "running ",
+  [ZOMBIE]    "zombie  "
+  };
+  struct proc* p;
+  char *state;
+  cprintf(" PID  Priority  State    r_time w_time context_switches  cur_q   q0   q1   q2   q3   q4 \n\n");
+
+  acquire(&ptable.lock);
+  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+    if(p->state==UNUSED) continue;
+    state = states[p->state];
+    cprintf(" %d    %d        %s    %d      %d      %d               %d    %d    %d    %d    %d   %d\n",p->pid, p->pri, state, p->rtime, p->last_wait_time, p->context_switches, p->cur_q, p->q_ticks[0], p->q_ticks[1], p->q_ticks[2], p->q_ticks[3], p->q_ticks[4]);
+  }
+  release(&ptable.lock);
 }

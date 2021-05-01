@@ -120,6 +120,9 @@ void            userinit(void);
 int             wait(void);
 void            wakeup(void*);
 void            yield(void);
+void            upd_times(void);
+void            ps(void);
+//
 
 // swtch.S
 void            swtch(struct context**, struct context*);
@@ -185,6 +188,16 @@ void            switchuvm(struct proc*);
 void            switchkvm(void);
 int             copyout(pde_t*, uint, void*, uint);
 void            clearpteu(pde_t *pgdir, char *uva);
+
+//queue.c
+void            qinit(void);
+int             isQFull(int);
+int             isQEmpty(int);
+int             push(int, int);
+int             pop(int);
+int             front(int);
+int             rear(int);
+int             removeq(int, int);
 
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x)/sizeof((x)[0]))

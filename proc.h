@@ -1,3 +1,6 @@
+// queue
+#define NUM_Q 5
+
 // Per-CPU state
 struct cpu {
   uchar apicid;                // Local APIC ID
@@ -49,6 +52,17 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+  uint ctime;			// create time
+  uint etime;			// end time
+  uint rtime;			// run time
+  uint last_wait_time;
+  uint total_wait_time;
+  uint pri;			// process priority
+  uint context_switches;	// no of context switches
+  int q_ticks[5];		// queues
+  int limit_ticks;		// time quantum
+  int aging_ticks;		// aging 
+  int cur_q;			// current q
 };
 
 // Process memory is laid out contiguously, low addresses first:
