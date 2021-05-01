@@ -62,6 +62,7 @@ void            iderw(struct buf*);
 void            ioapicenable(int irq, int cpu);
 extern uchar    ioapicid;
 void            ioapicinit(void);
+void            settimer(int count);
 
 // kalloc.c
 char*           kalloc(void);
@@ -120,9 +121,10 @@ void            userinit(void);
 int             wait(void);
 void            wakeup(void*);
 void            yield(void);
-void            io_wait_time(void);
-int             set_nice(int, int);
+void            upd_times(void);
+int             set_priority(int, int);
 void            ps(void);
+//
 
 // swtch.S
 void            swtch(struct context**, struct context*);
@@ -188,6 +190,7 @@ void            switchuvm(struct proc*);
 void            switchkvm(void);
 int             copyout(pde_t*, uint, void*, uint);
 void            clearpteu(pde_t *pgdir, char *uva);
+
 
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x)/sizeof((x)[0]))

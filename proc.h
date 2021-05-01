@@ -1,3 +1,4 @@
+#include "date.h"
 // Per-CPU state
 struct cpu {
   uchar apicid;                // Local APIC ID
@@ -49,25 +50,14 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
-  uint create_time;                  // Creation time of process
-  uint exit_time;                  // Exit time of process
-  uint run_time;                  // Run time of process
-  uint queue;                  // Current priority queue
-  uint ticktime;            // Ticks allowed for a process to run in a particular queue
-  uint queue_time;                  // Time at which process entered current queue 
-  uint n_times;                  // No of times process was picked by scheduler
-  uint wait_time;                  // waiting time 
-  uint iotime;                 // IO time
+  uint ctime;
+  uint rtime;
+  uint last_wait_time;
+  uint total_wait_time;
+  uint pri;
+  uint context_switches;
+  uint begin_ticks;
 };
-
-struct node {
-  struct proc *p;
-  struct node *next;
-};
-
-struct node nodes[NPROC];
-
-struct node *queues[101];
 
 // Process memory is laid out contiguously, low addresses first:
 //   text

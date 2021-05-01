@@ -14,6 +14,7 @@ struct {
 
 static struct proc *initproc;
 
+int yieldcount = 0;
 int nextpid = 1;
 extern void forkret(void);
 extern void trapret(void);
@@ -24,130 +25,6 @@ void
 pinit(void)
 {
   initlock(&ptable.lock, "ptable");
-  for (int i = 0; i < 101; i++)
-    queues[i] = 0;
-
-}
-
-void
-io_wait_time(void)
-{
-  struct proc *p;
-
-    for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
-    if (p->state == RUNNABLE)
-      p->wait_time++;
-    if (p->state == SLEEPING)
-      p->iotime++;
-  }
-}
-
-void
-push(struct node **head, struct proc *p)
-{
-  struct node *newNode = 0;
-  for (int i = 0; i < NPROC; i++) {
-    if (!(nodes[i].p)) {
-      newNode = &(nodes[i]);
-      break;
-    }
-  }
-  newNode->next = 0;
-  newNode->p = p;
-
-  if (!(*head)) {
-    *head = newNode;
-  } else {
-    struct node *cur = *head;
-    while (cur->next) cur = cur->next;
-    cur->next = newNode;
-  }
-}
-
-struct proc*
-pop(struct node **head)
-{
-  if (!(*head)) return 0;
-
-  struct node *del = (*head);
-  *head = (*head)->next;
-  struct proc *ret = del->p;
-  del->p = 0;
-  return ret;
-}
-
-void remove(struct node **head, int pid)
-{
-  if ((*head)->p->pid == pid) {
-    (*head)->p = 0;
-    *head = (*head)->next;
-    return;
-  }
-
-  struct node *cur = *head;
-  while (cur && cur->next) {
-    if (cur->next->p->pid == pid) {
-      struct node *del = cur->next;
-      cur->next = del->next;
-      del->p = 0;
-      return;
-    }
-    cur = cur->next;
-  }
-}
-
-int
-set_nice(int new_priority, int pid)
-{
-  if (new_priority < 0 || new_priority > 100)
-    return -1;
-
-  acquire(&ptable.lock);
-  struct proc *p;
-  int old_priority = -1;
-
-  for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
-    if (p->pid == pid) {
-      old_priority = p->queue;
-      p->queue = new_priority;
-      if (p->queue_time) {
-        remove(&queues[old_priority], p->pid);
-        push(&queues[new_priority], p);
-      }
-      break;
-    }
-  }
-  release(&ptable.lock);
-
-  if (myproc() && new_priority < myproc()->queue)
-    yield();
-
-  return old_priority;
-}
-
-void
-ps(void)
-{
-  struct proc *p;
-  char* states[] = { "UNUSED", "EMBRYO  ", "SLEEPING", "RUNNABLE", "RUNNING ", "ZOMBIE  " };
-
-  cprintf("PID\t");
-  cprintf("Priority\t");
-  cprintf("State   \trun_time\twait_time\tn_times\t");
-  cprintf("\n");
-
-  acquire(&ptable.lock);
-  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
-    if(p->state == UNUSED)
-      continue;
-
-    cprintf("%d\t", p->pid);
-    cprintf("%d\t\t", p->queue);
-    cprintf("%s\t%d\t%d\t%d\t", states[p->state], p->run_time, p->wait_time, p->n_times);
-    cprintf("\n");
-  }
-
-  release(&ptable.lock);
 }
 
 // Must be called with interrupts disabled
@@ -162,10 +39,10 @@ struct cpu*
 mycpu(void)
 {
   int apicid, i;
-  
+
   if(readeflags()&FL_IF)
     panic("mycpu called with interrupts enabled\n");
-  
+
   apicid = lapicid();
   // APIC IDs are not guaranteed to be contiguous. Maybe we should have
   // a reverse map, or reserve a register to store &cpus[i].
@@ -212,20 +89,16 @@ allocproc(void)
 found:
   p->state = EMBRYO;
   p->pid = nextpid++;
-  p->create_time = ticks;
-  p->exit_time = 0;
-  p->run_time = 0;
-  p->queue = 50;
-  p->n_times = 0;
-  p->wait_time = 0;
-  p->iotime = 0;
+
+  p->ctime = ticks;
+  p->rtime = 0;
+  p->last_wait_time=0;
+  p->total_wait_time=0;
+  p->context_switches=0;
+  p->pri = 10;
+
 
   release(&ptable.lock);
-  
-  if (1) {
-    if (myproc() && 50 < myproc()->queue)
-      yield();
-  }
 
   // Allocate kernel stack.
   if((p->kstack = kalloc()) == 0){
@@ -260,7 +133,7 @@ userinit(void)
   extern char _binary_initcode_start[], _binary_initcode_size[];
 
   p = allocproc();
-  
+
   initproc = p;
   if((p->pgdir = setupkvm()) == 0)
     panic("userinit: out of memory?");
@@ -351,7 +224,7 @@ fork(void)
   acquire(&ptable.lock);
 
   np->state = RUNNABLE;
-
+  np->begin_ticks = ticks;
   release(&ptable.lock);
 
   return pid;
@@ -396,10 +269,10 @@ exit(void)
         wakeup1(initproc);
     }
   }
-
   // Jump into the scheduler, never to return.
+  cprintf("Yieldcount = %d \n", yieldcount);
+  cprintf("Lapsed ticks = %d \n", ticks - curproc->begin_ticks);
   curproc->state = ZOMBIE;
-  curproc->exit_time = ticks;
   sched();
   panic("zombie exit");
 }
@@ -412,7 +285,7 @@ wait(void)
   struct proc *p;
   int havekids, pid;
   struct proc *curproc = myproc();
-  
+
   acquire(&ptable.lock);
   for(;;){
     // Scan through table looking for exited children.
@@ -458,60 +331,56 @@ wait(void)
 //      via swtch back to the scheduler.
 void
 scheduler(void)
-{ 
-  struct proc *p;
+{
+  struct proc *p=0;
   struct cpu *c = mycpu();
   c->proc = 0;
-  //struct proc *p;
+
   for(;;){
     // Enable interrupts on this processor.
     sti();
+    int max_last_wait_time = ticks;
+    int min_pri = 50;
+    struct proc *high = 0;
+    // Loop over process table looking for process to run.
     acquire(&ptable.lock);
-
-   //struct proc *p;
-
-  // Check for runnable processes not in any queue
-  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
-    if(p->state != RUNNABLE)
-      continue;
-
-    if ((p->queue_time) == 0) {
-      p->queue_time = ticks + 1;
-      push(&queues[p->queue], p);
-      // cprintf("Push %d\n", p->pid);
+    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+      if(p->state != RUNNABLE)
+        continue;
+      if(p->pri < min_pri){
+        min_pri = p->pri;
+        max_last_wait_time = p->last_wait_time;
+        high = p;
+      }
+      else if(p->pri == min_pri){
+        if(max_last_wait_time  < p->last_wait_time){
+          max_last_wait_time = p->last_wait_time;
+          high = p;
+        }
+      }
     }
-  }
+    if(high == 0){  // theres no first process
+      release(&ptable.lock);
+      continue;
+    }
+    // Switch to chosen process.  It is the process's job
+    // to release ptable.lock and then reacquire it
+    // before jumping back to us.
+    //cprintf("Process %d priority = %d\n",high->pid,high->pri);
+    c->proc = high;
+    switchuvm(high);
+    high->last_wait_time=0;
+    high->context_switches++;
+    high->state = RUNNING;
 
-  int q = 0;
-  while (q < 101 && !queues[q])  q++;
+    settimer(1000000);
+    swtch(&(c->scheduler), high->context);
+    switchkvm();
 
-  //if (q == 101) cprintf("ERROR !\n");
-
-  p = pop(&queues[q]);
-  if (q != p->queue) 
-      cprintf("ERROR !\n");
-
-  p->ticktime = 1;
-  //if (!p) cprintf("ERROR !\n");
-
-  // Switch to chosen process.  It is the process's job
-  // to release ptable.lock and then reacquire it
-  // before jumping back to us.
-  c->proc = p;
-  switchuvm(p);
-  p->state = RUNNING;
-  p->n_times++;
-  p->wait_time = 0;
-  
-  swtch(&(c->scheduler), p->context);
-  switchkvm();
-
-  // Process is done running for now.
-  // It should have changed its p->state before coming back.
-  c->proc = 0;
-  p->queue_time = 0;
-  release(&ptable.lock);
-
+    // Process is done running for now.
+    // It should have changed its p->state before coming back.
+    c->proc = 0;
+    release(&ptable.lock);
   }
 }
 
@@ -548,6 +417,7 @@ yield(void)
   acquire(&ptable.lock);  //DOC: yieldlock
   myproc()->state = RUNNABLE;
   sched();
+  yieldcount++;
   release(&ptable.lock);
 }
 
@@ -620,8 +490,9 @@ wakeup1(void *chan)
   struct proc *p;
 
   for(p = ptable.proc; p < &ptable.proc[NPROC]; p++)
-    if(p->state == SLEEPING && p->chan == chan)
+    if(p->state == SLEEPING && p->chan == chan){
       p->state = RUNNABLE;
+    }
 }
 
 // Wake up all processes sleeping on chan.
@@ -646,8 +517,9 @@ kill(int pid)
     if(p->pid == pid){
       p->killed = 1;
       // Wake process from sleep if necessary.
-      if(p->state == SLEEPING)
+      if(p->state == SLEEPING){
         p->state = RUNNABLE;
+      }
       release(&ptable.lock);
       return 0;
     }
@@ -691,4 +563,64 @@ procdump(void)
     }
     cprintf("\n");
   }
+}
+
+void
+upd_times(void){
+  struct proc* p;
+  acquire(&ptable.lock);
+  for(p=ptable.proc; p<&ptable.proc[NPROC]; p++){
+    if(p->state == RUNNING){
+      p->rtime++;
+    }
+    else if(p->state == RUNNABLE){
+      p->last_wait_time++;
+      p->total_wait_time++;
+    }
+  }
+
+  release(&ptable.lock);
+}
+
+// set_priority sets the priority of a process(pid) with new_priority
+int
+set_priority(int new_priority,int pid){
+  if(new_priority < 0 || new_priority>50){
+    return -1;
+  }
+  struct proc *p;
+  // acquire(&ptable.lock);
+  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+    if(p->pid!=pid) continue;
+    // Found the process
+    p->pri = new_priority;
+    // release(&ptable.lock);
+    break;
+  }
+  // release(&ptable.lock);
+  return new_priority;
+}
+
+// lists the processes along with relevant details
+void
+ps(void){
+  static char *states[] = {
+  [UNUSED]    "UNUSED  ",
+  [EMBRYO]    "EMBRYO  ",
+  [SLEEPING]  "SLEEPING",
+  [RUNNABLE]  "RUNNABLE",
+  [RUNNING]   "RUNNING ",
+  [ZOMBIE]    "ZOMBIE  "
+  };
+  struct proc* p;
+  char *state;
+  cprintf(" PID  Priority  State    r_time    context_switches  \n\n");
+
+  acquire(&ptable.lock);
+  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+    if(p->state==UNUSED) continue;
+    state = states[p->state];
+    cprintf(" %d    %d        %s    %d      %d    \n",p->pid, p->pri, state, p->rtime, p->context_switches);
+  }
+  release(&ptable.lock);
 }

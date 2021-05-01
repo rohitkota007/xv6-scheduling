@@ -1,11 +1,13 @@
 #include "types.h"
 #include "x86.h"
 #include "defs.h"
-#include "date.h"
+//#include "date.h"
 #include "param.h"
 #include "memlayout.h"
 #include "mmu.h"
 #include "proc.h"
+
+extern int yieldcount;
 
 int
 sys_fork(void)
@@ -18,22 +20,6 @@ sys_exit(void)
 {
   exit();
   return 0;  // not reached
-}
-
-int
-sys_set_nice(void)
-{
-  int priority;
-  int pid;
-
-  if (argint(0, &priority) < 0 || argint(1, &pid) < 0)
-    return -1;
-  return set_nice(priority, pid);
-}
-
-void sys_ps(void)
-{
-  return ps();
 }
 
 int
@@ -105,3 +91,20 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+
+int sys_set_priority(){
+  int new_priority;
+  int pid;
+  if(argint(0,&new_priority)<0)
+    return -1;
+  if(argint(1,&pid)<0)
+    return -1;
+  return set_priority(new_priority,pid);
+}
+
+int sys_ps(){
+  ps();
+  return 0;
+}
+
