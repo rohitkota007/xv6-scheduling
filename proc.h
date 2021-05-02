@@ -52,6 +52,7 @@ struct proc {
   char name[16];               // Process name (debugging)
   uint ctime;
   uint rtime;
+  uint etime;
   uint last_wait_time;
   uint total_wait_time;
   uint pri;

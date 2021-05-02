@@ -92,6 +92,7 @@ found:
 
   p->ctime = ticks;
   p->rtime = 0;
+  p->etime = 0;
   p->last_wait_time=0;
   p->total_wait_time=0;
   p->context_switches=0;
@@ -273,6 +274,7 @@ exit(void)
   cprintf("Yieldcount = %d \n", yieldcount);
   cprintf("Lapsed ticks = %d \n", ticks - curproc->begin_ticks);
   curproc->state = ZOMBIE;
+  curproc->etime = ticks;
   sched();
   panic("zombie exit");
 }
@@ -621,7 +623,7 @@ wait2(int *wtime, int *rtime)
       havekids = 1;
       if(p->state == ZOMBIE){
         *rtime = p->rtime;
-        *wtime = p->total_wait_time;
+        *wtime = p->etime - p->ctime - p->rtime;
         pid = p->pid;
         kfree(p->kstack);
         p->kstack = 0;
