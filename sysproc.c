@@ -89,3 +89,28 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+int
+sys_set_tickets(void)
+{
+  int numTickets;
+  if(argint(0,&numTickets) < 0){
+    myproc()->tickets = 10;
+  }
+  else{
+    myproc()->tickets = numTickets;
+  }
+ return 0;
+}
+
+int sys_wait2()
+{
+  int *rtime;
+  int *wtime;
+  if(argptr(0, (void *)&wtime, sizeof(wtime))<0)
+    return -1;
+  if(argptr(1, (void *)&rtime, sizeof(rtime))<0)
+    return -1;
+  return wait2(wtime, rtime);
+}
+

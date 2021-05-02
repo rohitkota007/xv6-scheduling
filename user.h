@@ -23,6 +23,10 @@ int getpid(void);
 char* sbrk(int);
 int sleep(int);
 int uptime(void);
+int set_tickets(int tickets);
+int wait2(int*, int*);
+
+
 
 // ulib.c
 int stat(const char*, struct stat*);

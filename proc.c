@@ -6,6 +6,7 @@
 #include "x86.h"
 #include "proc.h"
 #include "spinlock.h"
+#include "rand.h"
 
 struct {
   struct spinlock lock;
@@ -89,6 +90,8 @@ found:
   p->state = EMBRYO;
   p->pid = nextpid++;
   p->tickets = 10;
+  p->rtime = 0;
+  p->total_wait_time=0;
 
   release(&ptable.lock);
 
@@ -296,6 +299,7 @@ wait(void)
         p->name[0] = 0;
         p->killed = 0;
         p->state = UNUSED;
+        p->total_wait_time=0;
         release(&ptable.lock);
         return pid;
       }
@@ -312,37 +316,6 @@ wait(void)
   }
 }
 
-/* This is a modified version of the LFSR alogrithm
-Link: http://citeseerx.ist.psu.edu/viewdoc/download;jsessionid=189AE0CC34CC735A67D0F8AFCF7C22B8?doi=10.1.1.43.3639&rep=rep1&type=pdf */
-long getrandom(long tickets) {
-  if(tickets <= 0) {
-    return 1;
-  }
-
-  static int z1 = 12345; // 12345 for rest of zx
-  static int z2 = 12345; // 12345 for rest of zx
-  static int z3 = 12345; // 12345 for rest of zx
-  static int z4 = 12345; // 12345 for rest of zx
-
-  int b;
-  b = (((z1 << 6) ^ z1) >> 13);
-  z1 = (((z1 & 4294967294) << 18) ^ b);
-  b = (((z2 << 2) ^ z2) >> 27);
-  z2 = (((z2 & 4294967288) << 2) ^ b);
-  b = (((z3 << 13) ^ z3) >> 21);
-  z3 = (((z3 & 4294967280) << 7) ^ b);
-  b = (((z4 << 3) ^ z4) >> 12);
-  z4 = (((z4 & 4294967168) << 13) ^ b);
-
-  // if we have an argument, then we can use it
-  int rand = ((z1 ^ z2 ^ z3 ^ z4)) % tickets;
-
-  if(rand < 0) {
-    rand = rand * -1;
-  }
-
-  return rand;
-}
 
 //PAGEBREAK: 42
 // Per-CPU process scheduler.
@@ -375,7 +348,7 @@ scheduler(void)
         totaltickets += p->tickets;
       }
     }
-    winner = getrandom(totaltickets);
+    winner = random_at_most(totaltickets);
     for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
       if(p->state != RUNNABLE)
         continue;
@@ -544,6 +517,66 @@ kill(int pid)
   release(&ptable.lock);
   return -1;
 }
+
+void
+upd_times(void){
+  struct proc* p;
+  acquire(&ptable.lock);
+  for(p=ptable.proc; p<&ptable.proc[NPROC]; p++){
+    if(p->state == RUNNING){
+      p->rtime++;
+    }
+    else if(p->state == RUNNABLE){
+      p->total_wait_time++;
+    }
+  }
+
+  release(&ptable.lock);
+}
+
+int
+wait2(int *wtime, int *rtime)
+{
+  struct proc *p;
+  int havekids, pid;
+  struct proc *curproc = myproc();
+
+  acquire(&ptable.lock);
+  for(;;){
+    // Scan through table looking for exited children.
+    havekids = 0;
+    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+      if(p->parent != curproc)
+        continue;
+      havekids = 1;
+      if(p->state == ZOMBIE){
+        *rtime = p->rtime;
+        *wtime = p->total_wait_time;
+        pid = p->pid;
+        kfree(p->kstack);
+        p->kstack = 0;
+        freevm(p->pgdir);
+        p->pid = 0;
+        p->parent = 0;
+        p->name[0] = 0;
+        p->killed = 0;
+        p->state = UNUSED;
+        release(&ptable.lock);
+        return pid;
+      }
+    }
+
+    // No point waiting if we don't have any children.
+    if(!havekids || curproc->killed){
+      release(&ptable.lock);
+      return -1;
+    }
+
+    // Wait for children to exit.  (See wakeup1 call in proc_exit.)
+    sleep(curproc, &ptable.lock);  //DOC: wait-sleep
+  }
+}
+
 
 //PAGEBREAK: 36
 // Print a process listing to console.  For debugging.
