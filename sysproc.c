@@ -103,6 +103,18 @@ int sys_set_priority(){
   return set_priority(new_priority,pid);
 }
 
+// this wait syscall returns the related times for specifed process (Added)
+int sys_wait2()
+{
+  int *rtime;
+  int *wtime;
+  if(argptr(0, (void *)&wtime, sizeof(wtime))<0)
+    return -1;
+  if(argptr(1, (void *)&rtime, sizeof(rtime))<0)
+    return -1;
+  return wait2(wtime, rtime);
+}
+
 int sys_ps(){
   ps();
   return 0;

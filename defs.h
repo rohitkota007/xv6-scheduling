@@ -124,6 +124,7 @@ void            yield(void);
 void            upd_times(void);
 int             set_priority(int, int);
 void            ps(void);
+int             wait2(int*,int*);
 //
 
 // swtch.S
