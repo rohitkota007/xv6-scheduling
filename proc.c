@@ -6,6 +6,7 @@
 #include "x86.h"
 #include "proc.h"
 #include "spinlock.h"
+#include "date.h"
 
 struct {
   struct spinlock lock;
@@ -89,7 +90,9 @@ found:
   p->state = EMBRYO;
   p->pid = nextpid++;
 
-  p->ctime = ticks;
+  struct rtcdate d;
+  cmostime(&d);
+  p->ctime = d.hour * 3600 + d.minute * 60 + d.second;
   p->rtime = 0;
   p->last_wait_time=0;
   p->total_wait_time=0;
@@ -333,7 +336,7 @@ scheduler(void)
   for(;;){
     // Enable interrupts on this processor.
     sti();
-    int mintime = ticks+1;
+    int mintime = 1e9;
     struct proc *first = 0;
     // Loop over process table looking for process to run.
     acquire(&ptable.lock);
